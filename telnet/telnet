@@ -1,0 +1,81 @@
+#!/usr/bin/python
+# -*- coding: utf8 -*-
+
+import re
+import logging
+import logging.handlers
+import base64
+import pexpect
+import getpass
+import argparse
+import pyrad.packet
+from datetime import datetime
+from pyrad.client import Client
+from pyrad.dictionary import Dictionary
+
+# this is the method called by the pexpect object to log
+def log_write(*args, **kwargs):
+	content = args[0]
+
+	if re.search ("Command:", content):
+		content = re.search("Command: (.+)", content).group(1)
+		return logger.info(content) # call the logger info method with the reworked content
+
+# our flush method
+def log_flush():
+	pass
+
+if __name__ == '__main__':
+
+	parser = argparse.ArgumentParser(description='Telnet client')
+	parser.add_argument("bs", type=str, help="BS hostname")
+	parser.add_argument("--login", type=str, help="User login")
+	args = parser.parse_args()
+
+	bs = args.bs
+
+	if not re.search ("^bs\d{5}\.is74\.ru$", bs) and not re.search ("^bs\d{5}$", bs):
+		print "Wrong BS name"
+		exit (1)
+
+	if re.search ("bs\d{5}\.is74\.ru", bs):
+		bs = re.search("(.+)\.is74.ru", bs).group(1)
+
+	if args.login == None:
+		username = raw_input("Username: ")
+	else:
+		username = args.login
+
+	password = getpass.getpass()
+
+	srv=Client(server="10.100.4.100", secret="intsvwebkey", dict=Dictionary("/etc/radiusclient/dictionary"))
+	req=srv.CreateAuthPacket(code=pyrad.packet.AccessRequest, User_Name=username, NAS_Identifier="web_netobject_proxy", NAS_Port_Type="Virtual", Service_Type="Authenticate-Only")
+	req["User-Password"] = req.PwCrypt(password)
+
+	reply=srv.SendPacket(req)
+
+	if reply.code == pyrad.packet.AccessAccept:
+
+		logger = logging.getLogger('telnet: ' + username + '@' + bs)
+		hdlr = logging.handlers.SysLogHandler(address = '/dev/log')
+		formatter = logging.Formatter('%(name)s COMMAND: %(message)s')
+		hdlr.setFormatter(formatter)
+		logger.addHandler(hdlr)
+		logger.setLevel(logging.INFO)
+
+		# give the logger the methods required by pexpect
+		logger.write = log_write
+		logger.flush = log_flush
+
+		telnet_args = [bs]
+		exp = pexpect.spawn(base64.b64decode("L3Vzci9iaW4vdHQ="), args = telnet_args, logfile=logger)
+
+		exp.expect('UserName:')
+		exp.sendline(bs + 'adm')
+		exp.expect('PassWord:')
+		exp.sendline(base64.b64decode("BASE64_PASSWORD"))
+
+		exp.interact()
+	else:
+		print ("Access Denied")
+
